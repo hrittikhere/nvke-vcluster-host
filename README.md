@@ -65,6 +65,27 @@ The exported file contains cluster-admin credentials. Keep `.state/` private. Th
 
 For IAP, set `NVKE_USE_IAP=1`. Your environment must already have the appropriate IAP permissions and a firewall rule allowing TCP 22 from `35.235.240.0/20`. This option changes the SSH transport; the current VM creation command still assigns an external IP. A VM without an external IP additionally requires Cloud NAT or another outbound route for the downloads.
 
+## Run more sites
+
+Each NVKE site is its own VM with its own management cluster and workload cluster. The `sites/` directory holds one config per extra site. Each file loads `config.env`, then overrides the zone, VM name, cluster name, local state directory and laptop ports, so the sites can be built, tunnelled and destroyed independently and at the same time.
+
+| Config | Zone | VM | NVKE cluster | Laptop ports (API, Tilt, Kubernetes) |
+| --- | --- | --- | --- | --- |
+| `config.env` | us-central1-a | nvke-blog-demo | nvke-demo | 8080, 10350, 8443 |
+| `sites/eu-west4.env` | europe-west4-a | nvke-blog-eu-west4 | nvke-eu | 18080, 11350, 18443 |
+| `sites/asia-southeast1.env` | asia-southeast1-b | nvke-blog-asia-southeast1 | nvke-asia | 28080, 21350, 28443 |
+
+Prefix any command with the site config:
+
+```bash
+NVKE_CONFIG=sites/eu-west4.env ./nvke-gcp.sh up
+NVKE_CONFIG=sites/eu-west4.env ./nvke-gcp.sh status
+NVKE_CONFIG=sites/asia-southeast1.env ./nvke-gcp.sh tunnel
+NVKE_CONFIG=sites/asia-southeast1.env ./nvke-gcp.sh destroy --yes
+```
+
+A site's local files live under `.state/sites/<site>/`. Each site costs the same as the first VM.
+
 ## What the scripts do
 
 1. Locate the VM in the configured project and zone. Authentication failures stop execution rather than being treated as a missing VM.
@@ -77,7 +98,7 @@ For IAP, set `NVKE_USE_IAP=1`. Your environment must already have the appropriat
 8. Run the upstream management-cluster/image preparation target, then keep `tilt up` running as `nvke-lab-tilt.service`.
 9. Wait for the NICo provider and API, create the configured workload cluster if absent, and wait for both nodes. Save its kubeconfig.
 10. Install `local-path-provisioner` (pinned by `NVKE_LOCAL_PATH_VERSION`, manifest verified against `NVKE_LOCAL_PATH_SHA256`) on the workload cluster and mark `local-path` as the default storage class. The mock lab ships no provisioner, and without one every PersistentVolumeClaim, including a vCluster control plane's data volume, stays Pending.
-11. Install vCluster on the workload cluster with the Helm driver and the chart version that matches the CLI (`NVKE_VCLUSTER_VERSION`). Create the cluster named by `NVKE_VCLUSTER_NAME` in `NVKE_VCLUSTER_NAMESPACE`, wait for its control plane pod, and confirm its API answers through `vcluster connect`. Reruns upgrade the same release in place. Record tool versions.
+11. Record tool versions. Setup installs the vCluster CLI but creates no vCluster; create clusters later from vCluster Platform once the workload cluster is connected.
 
 ## Files
 
@@ -88,32 +109,20 @@ For IAP, set `NVKE_USE_IAP=1`. Your environment must already have the appropriat
 | `kubeconfig.py` | Laptop | Prepare a TLS-valid kubeconfig for the SSH tunnel |
 | `remote/submit.sh` | VM, root | Submit the persistent setup job |
 | `remote/install.sh` | VM, root | Install tools, check kernel and prepare the lab user/services |
-| `remote/bootstrap.sh` | VM, lab user | Build and bring up NVKE, create and verify the workload cluster, then install vCluster |
+| `remote/bootstrap.sh` | VM, lab user | Build and bring up NVKE, create and verify the workload cluster, then add the default storage class |
 | `remote/manage.sh` | VM | Status and wait operations |
 | `tests/test_kit.py` | Laptop | Offline regression checks |
 
-## Use the demo cluster
+## Use the vCluster CLI
 
-Setup creates a cluster named `demo` in the `vcluster-demo` namespace of the workload cluster. The NVKE workload cluster acts as its control plane cluster. Its control plane runs as a pod, keeps its data on a `local-path` volume, and schedules workloads onto the two mock-NICo nodes. To pick another name, change `NVKE_VCLUSTER_NAME` and `NVKE_VCLUSTER_NAMESPACE` before running `up`. To skip the install, set `NVKE_VCLUSTER_NAME` to an empty value.
-
-The `vcluster` command runs the pinned CLI on the VM against the workload cluster, so you need no local tunnel or local CLI:
+Setup installs the pinned vCluster CLI (`NVKE_VCLUSTER_VERSION` in `config.env`) on the VM but creates no vCluster. The `vcluster` command runs that CLI on the VM against the workload cluster, so you need no local tunnel or local CLI:
 
 ```bash
+./nvke-gcp.sh vcluster --version
 ./nvke-gcp.sh vcluster list
-./nvke-gcp.sh vcluster connect demo -n vcluster-demo -- kubectl get namespaces
-./nvke-gcp.sh vcluster connect demo -n vcluster-demo -- kubectl create deployment web --image=nginx
-./nvke-gcp.sh kubectl get pods -n vcluster-demo   # the synced pod as the workload cluster sees it
 ```
 
-For an interactive session, run `./nvke-gcp.sh ssh`, then `sudo -iu nvkelab` and `KUBECONFIG=/opt/nvke-lab/state/workload.kubeconfig vcluster connect demo -n vcluster-demo`. The CLI switches that shell's context to the cluster until you run `vcluster disconnect`.
-
-The cluster uses the chart defaults with shared nodes, which suits a trusted demo. It is not a tenant isolation boundary for untrusted users. To remove only this cluster:
-
-```bash
-./nvke-gcp.sh vcluster delete demo -n vcluster-demo
-```
-
-A later `up` creates it again unless you clear `NVKE_VCLUSTER_NAME` first.
+Connect the workload cluster to vCluster Platform as described below, then create clusters from the Platform.
 
 ## Continue into vCluster Platform
 
@@ -173,7 +182,6 @@ kubectl --context=kind-controller-capi get pods -A
 - **ProvisioningFailed / timeout:** check Tilt logs and the controller/CAPNICo pods before rerunning. A failed existing cluster is not automatically deleted and recreated.
 - **After a VM reboot:** run `up` again to reconcile the development setup. The kit keeps services alive across SSH disconnections but does not promise unattended recovery across host reboots or kernel changes.
 - **No GPU workloads:** mock-NICo simulates infrastructure with containers. Use a separate GPU-backed setup to validate GPU scheduling or inference performance.
-- **Setup stops at "Installing vCluster":** run `./nvke-gcp.sh kubectl get pods,pvc -n vcluster-demo` and `./nvke-gcp.sh kubectl describe pods -n vcluster-demo`. A Pending claim points to the storage class entry below. An image pull error means the VM cannot reach the container registry. To finish setup without vCluster, clear `NVKE_VCLUSTER_NAME` and rerun `up`.
 - **Pod or PersistentVolumeClaim Pending with `no storage class is set`:** the default storage class is missing. `./nvke-gcp.sh kubectl get storageclass` should list `local-path (default)`. Rerun `./nvke-gcp.sh up` to reinstall it, then delete the Pending pod and claim so the StatefulSet recreates them. Persistent volumes live on the node's disk and are not replicated.
 
 ## Remove the lab
@@ -198,6 +206,8 @@ Revised again on November 4, 2026 after the first real GCE run failed in `make c
 Revised on November 4, 2026 after the first vCluster Platform import on the live VM: `add cluster` failed with an access key scoped to `loft-cli`, and the first cluster created from the Platform stayed Pending because the workload cluster had no storage class. Bootstrap now installs a pinned, checksum-verified `local-path-provisioner` and marks it default; the README documents the unscoped access key. The provisioner was applied to the live VM by hand with the same version; the bootstrap path was syntax-checked and covered by the 20 offline tests, which pass, but not rerun end to end.
 
 Revised on November 5, 2026 to install vCluster as part of setup. Bootstrap now creates a cluster with the Helm driver and the chart version pinned by `NVKE_VCLUSTER_VERSION`, waits for its control plane pod, and checks its API through `vcluster connect`. The launcher gained a `vcluster` passthrough command, and `status` lists the control plane pod. The CLI flags were checked against vCluster CLI 0.37.1 help output. The chart is fetched by the CLI from the vCluster chart repository and is pinned by version, not by checksum. Shell syntax checks and 24 offline tests pass after these edits. The new phase has not run on a VM yet.
+
+Revised on November 5, 2026 to stop creating a vCluster during setup. Setup still installs and records the pinned vCluster CLI, and the `vcluster` passthrough command remains. `NVKE_VCLUSTER_NAME` and `NVKE_VCLUSTER_NAMESPACE` are gone; clusters are created from vCluster Platform after the workload cluster is connected. The same change added `sites/` configs and `NVKE_STATE_DIR` for running several sites side by side.
 
 **A real GCP end-to-end deployment was not executed while authoring this kit.** Kernel support, cloud capacity/permissions, external artifact downloads, complete upstream startup, and vCluster Platform import still need validation on your VM. The kit is a reproducible starting point with checks and logs, not a claim of a tested production integration.
 
