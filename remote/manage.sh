@@ -32,11 +32,6 @@ case ${1:-status} in
     if [[ -f "$BASE/state/workload.kubeconfig" ]]; then
       lab kubectl --request-timeout=20s --kubeconfig="$BASE/state/workload.kubeconfig" get nodes -o wide \
         || echo 'Workload API is not reachable right now; see Tilt logs.' >&2
-      source "$BASE/kit/lab.env"
-      if [[ -n "${NVKE_VCLUSTER_NAME:-}" ]]; then
-        lab kubectl --request-timeout=20s --kubeconfig="$BASE/state/workload.kubeconfig" \
-          -n "$NVKE_VCLUSTER_NAMESPACE" get pods -l "app=vcluster,release=$NVKE_VCLUSTER_NAME" -o wide || true
-      fi
     fi
     ;;
   *) echo 'Expected status or wait.' >&2; exit 2 ;;

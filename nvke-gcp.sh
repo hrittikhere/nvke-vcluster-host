@@ -3,7 +3,8 @@ set -euo pipefail
 KIT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # This is your own trusted shell configuration.
 source "${NVKE_CONFIG:-$KIT_DIR/config.env}"
-STATE_DIR="$KIT_DIR/.state"
+# Site configs set NVKE_STATE_DIR so several VMs can run side by side.
+STATE_DIR="${NVKE_STATE_DIR:-$KIT_DIR/.state}"
 die() { echo "ERROR: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || die "Install $1 first."; }
 quote() { printf '%q' "$1"; }
@@ -34,9 +35,6 @@ case "$CMD" in help|-h|--help) usage; exit 0;; esac
 [[ "$NVKE_DISK_GB" =~ ^[0-9]+$ ]] && (( NVKE_DISK_GB >= 200 )) || die "Disk must be at least 200 GB."
 [[ "$NVKE_READY_TIMEOUT" =~ ^[0-9]+$ ]] || die "Invalid timeout."
 [[ "$NVKE_VCLUSTER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "NVKE_VCLUSTER_VERSION must be a plain semver like 0.37.6."
-k8s_name='^[a-z]([a-z0-9-]{0,50}[a-z0-9])?$'
-[[ -z "$NVKE_VCLUSTER_NAME" || "$NVKE_VCLUSTER_NAME" =~ $k8s_name ]] || die "NVKE_VCLUSTER_NAME must be empty or a lowercase DNS label."
-[[ "$NVKE_VCLUSTER_NAMESPACE" =~ $k8s_name ]] || die "NVKE_VCLUSTER_NAMESPACE must be a lowercase DNS label."
 [[ "$NVKE_LOCAL_PATH_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "NVKE_LOCAL_PATH_VERSION must be a tag like v0.0.30."
 [[ "$NVKE_LOCAL_PATH_SHA256" =~ ^[a-f0-9]{64}$ ]] || die "NVKE_LOCAL_PATH_SHA256 must be the manifest's sha256."
 for port in "$NVKE_LOCAL_API_PORT" "$NVKE_LOCAL_TILT_PORT" "$NVKE_LOCAL_K8S_PORT"; do
@@ -47,8 +45,6 @@ GCLOUD_ARGS=(--project="$NVKE_PROJECT" --zone="$NVKE_ZONE")
 SSH_ARGS=(--quiet)
 [[ "$NVKE_USE_IAP" != 1 ]] || SSH_ARGS+=(--tunnel-through-iap)
 if [[ "$CMD" == plan ]]; then
-  vcluster_plan='skipped (NVKE_VCLUSTER_NAME is empty)'
-  [[ -z "$NVKE_VCLUSTER_NAME" ]] || vcluster_plan="cluster $NVKE_VCLUSTER_NAME in namespace $NVKE_VCLUSTER_NAMESPACE, chart $NVKE_VCLUSTER_VERSION"
   cat <<PLAN
 Target: $NVKE_PROJECT / $NVKE_ZONE / $NVKE_VM
 New VM: $NVKE_MACHINE, ${NVKE_DISK_GB} GB balanced disk, Ubuntu 24.04 amd64
@@ -56,7 +52,6 @@ Existing VM: reuse without resizing or replacing it
 NVKE: $NVKE_REF; workload cluster: $NVKE_CLUSTER
 VM tools: Tilt $NVKE_TILT_VERSION, kubectl $NVKE_KUBECTL_VERSION, vCluster CLI $NVKE_VCLUSTER_VERSION
 Workload cluster add-ons: local-path-provisioner $NVKE_LOCAL_PATH_VERSION as the default storage class
-vCluster: $vcluster_plan
 Host installation: /opt/nvke-lab, dedicated nvkelab user
 Endpoint access: SSH to localhost ports $NVKE_LOCAL_TILT_PORT, $NVKE_LOCAL_API_PORT, $NVKE_LOCAL_K8S_PORT
 No public application ingress rules are created.
@@ -89,7 +84,7 @@ case "$CMD" in
     # Only copy non-secret configuration and the remote scripts.
     {
       for key in NVKE_REF NVKE_CLUSTER NVKE_TILT_VERSION NVKE_KUBECTL_VERSION NVKE_VCLUSTER_VERSION \
-                 NVKE_VCLUSTER_NAME NVKE_VCLUSTER_NAMESPACE NVKE_LOCAL_PATH_VERSION NVKE_LOCAL_PATH_SHA256 NVKE_READY_TIMEOUT; do
+                 NVKE_LOCAL_PATH_VERSION NVKE_LOCAL_PATH_SHA256 NVKE_READY_TIMEOUT; do
         printf '%s=%q\n' "$key" "${!key}"
       done
     } > "$STATE_DIR/lab.env"
