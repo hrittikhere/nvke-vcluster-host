@@ -193,6 +193,46 @@ elif a[:2] == ['compute', 'ssh'] and os.environ.get('MOCK_WAIT_ERROR') == '1':
         self.assertIn('NVKE_LOCAL_PATH_VERSION=v0.0.30', env)
         self.assertRegex(env, r'NVKE_LOCAL_PATH_SHA256=[a-f0-9]{64}\n')
 
+    def test_vcluster_cluster_validated_and_forwarded(self):
+        p = self.kit / 'config.env'
+        original = p.read_text()
+        for bad in ['NVKE_VCLUSTER_NAME=Demo', 'NVKE_VCLUSTER_NAME="a;b"']:
+            with self.subTest(bad=bad):
+                p.write_text(original.replace('NVKE_VCLUSTER_NAME=demo', bad))
+                r = self.run_kit('up')
+                self.assertNotEqual(r.returncode, 0)
+                self.assertEqual(self.calls(), [])
+        p.write_text(original.replace('NVKE_VCLUSTER_NAMESPACE=vcluster-demo', 'NVKE_VCLUSTER_NAMESPACE='))
+        r = self.run_kit('up')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.calls(), [])
+        p.write_text(original)
+        r = self.run_kit('up')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        env = (self.kit / '.state' / 'lab.env').read_text()
+        self.assertIn('NVKE_VCLUSTER_NAME=demo\n', env)
+        self.assertIn('NVKE_VCLUSTER_NAMESPACE=vcluster-demo\n', env)
+
+    def test_vcluster_install_can_be_skipped(self):
+        p = self.kit / 'config.env'
+        p.write_text(p.read_text().replace('NVKE_VCLUSTER_NAME=demo', 'NVKE_VCLUSTER_NAME='))
+        r = self.run_kit('plan')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('vCluster: skipped', r.stdout)
+        r = self.run_kit('up')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("NVKE_VCLUSTER_NAME=''\n", (self.kit / '.state' / 'lab.env').read_text())
+
+    def test_remote_vcluster_targets_workload_and_quotes(self):
+        dangerous = 'x; touch /tmp/nvke-should-not-exist'
+        r = self.run_kit('vcluster', 'list', '--namespace', dangerous)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        call = self.calls()[0]
+        import shlex
+        words = shlex.split(call[call.index('--command') + 1])
+        self.assertIn('KUBECONFIG=/opt/nvke-lab/state/workload.kubeconfig', words)
+        self.assertEqual(words[-3:], ['list', '--namespace', dangerous])
+
     def test_remote_kubectl_shell_quoting(self):
         dangerous = 'x; touch /tmp/nvke-should-not-exist'
         r = self.run_kit('kubectl', 'get', 'pods', '-l', dangerous)
@@ -227,6 +267,19 @@ class RemoteScriptTests(unittest.TestCase):
         # The phase must run against the workload cluster, after its nodes are Ready.
         self.assertLess(bootstrap.index('condition=Ready nodes'), bootstrap.index('local-path-storage.yaml'))
         self.assertLess(bootstrap.index('local-path-storage.yaml'), bootstrap.index('versions.txt'))
+
+    def test_bootstrap_installs_vcluster_after_storage(self):
+        """The control plane's data volume needs the default storage class first."""
+        bootstrap = (ROOT / 'remote/bootstrap.sh').read_text()
+        create = bootstrap.index('vc create "$NVKE_VCLUSTER_NAME"')
+        for flag in ['--driver helm', '--chart-version "$NVKE_VCLUSTER_VERSION"',
+                     '--upgrade', '--connect=false', '--add=false']:
+            self.assertIn(flag, bootstrap[create:create + 300])
+        self.assertIn('KUBECONFIG="$BASE/state/workload.kubeconfig" vcluster', bootstrap)
+        self.assertIn('if [[ -n "$NVKE_VCLUSTER_NAME" ]]', bootstrap)
+        self.assertLess(bootstrap.index('rollout status deployment/local-path-provisioner'), create)
+        self.assertLess(create, bootstrap.index('-- kubectl get namespaces'))
+        self.assertLess(bootstrap.index('-- kubectl get namespaces'), bootstrap.index('date -u'))
 
     def test_install_exposes_nvkectl(self):
         install = (ROOT / 'remote/install.sh').read_text()

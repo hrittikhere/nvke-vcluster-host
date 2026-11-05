@@ -161,6 +161,28 @@ done
 run wk annotate storageclass local-path storageclass.kubernetes.io/is-default-class=true --overwrite
 run wk -n local-path-storage rollout status deployment/local-path-provisioner --timeout=300s
 run wk get storageclass
+if [[ -n "$NVKE_VCLUSTER_NAME" ]]; then
+  phase "Installing vCluster $NVKE_VCLUSTER_NAME on the workload cluster"
+  # The Helm driver keeps this independent of any vCluster Platform login.
+  # --upgrade makes reruns converge on the pinned chart instead of failing.
+  vc() { KUBECONFIG="$BASE/state/workload.kubeconfig" vcluster "$@"; }
+  run vc create "$NVKE_VCLUSTER_NAME" --namespace "$NVKE_VCLUSTER_NAMESPACE" \
+    --driver helm --chart-version "$NVKE_VCLUSTER_VERSION" \
+    --upgrade --connect=false --add=false
+  deadline=$((SECONDS + 900))
+  until [[ -n $(wk -n "$NVKE_VCLUSTER_NAMESPACE" get pods -l "app=vcluster,release=$NVKE_VCLUSTER_NAME" -o name) ]]; do
+    (( SECONDS < deadline )) || { echo 'vCluster control plane pod was not created.' >&2; exit 1; }
+    sleep 5
+  done
+  run wk -n "$NVKE_VCLUSTER_NAMESPACE" wait --for=condition=Ready pod \
+    -l "app=vcluster,release=$NVKE_VCLUSTER_NAME" --timeout=900s
+  # Prove the cluster's own API answers, not just that its pod is Ready.
+  until timeout 120 vc connect "$NVKE_VCLUSTER_NAME" --namespace "$NVKE_VCLUSTER_NAMESPACE" \
+          --background-proxy=false -- kubectl get namespaces; do
+    (( SECONDS < deadline )) || { echo 'vCluster API did not answer through vcluster connect.' >&2; exit 1; }
+    sleep 10
+  done
+fi
 {
   git rev-parse HEAD
   go version
@@ -171,6 +193,7 @@ run wk get storageclass
   tilt version
   vcluster --version
   echo "local-path-provisioner $NVKE_LOCAL_PATH_VERSION"
+  [[ -z "$NVKE_VCLUSTER_NAME" ]] || echo "vCluster chart $NVKE_VCLUSTER_VERSION: $NVKE_VCLUSTER_NAMESPACE/$NVKE_VCLUSTER_NAME"
 } > "$BASE/state/versions.txt"
-phase 'Ready: workload cluster has two Ready nodes'
+phase "Ready: workload cluster has two Ready nodes${NVKE_VCLUSTER_NAME:+ and vCluster $NVKE_VCLUSTER_NAME is running}"
 date -u +%FT%TZ > "$BASE/state/ready"
