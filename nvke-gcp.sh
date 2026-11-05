@@ -37,6 +37,8 @@ case "$CMD" in help|-h|--help) usage; exit 0;; esac
 [[ "$NVKE_VCLUSTER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "NVKE_VCLUSTER_VERSION must be a plain semver like 0.37.6."
 [[ "$NVKE_LOCAL_PATH_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "NVKE_LOCAL_PATH_VERSION must be a tag like v0.0.30."
 [[ "$NVKE_LOCAL_PATH_SHA256" =~ ^[a-f0-9]{64}$ ]] || die "NVKE_LOCAL_PATH_SHA256 must be the manifest's sha256."
+[[ "$NVKE_METRICS_SERVER_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "NVKE_METRICS_SERVER_VERSION must be a tag like v0.9.0."
+[[ "$NVKE_METRICS_SERVER_SHA256" =~ ^[a-f0-9]{64}$ ]] || die "NVKE_METRICS_SERVER_SHA256 must be the manifest's sha256."
 for port in "$NVKE_LOCAL_API_PORT" "$NVKE_LOCAL_TILT_PORT" "$NVKE_LOCAL_K8S_PORT"; do
   [[ "$port" =~ ^[0-9]+$ ]] && (( port > 1023 && port < 65536 )) || die "Invalid local port: $port"
 done
@@ -51,7 +53,7 @@ New VM: $NVKE_MACHINE, ${NVKE_DISK_GB} GB balanced disk, Ubuntu 24.04 amd64
 Existing VM: reuse without resizing or replacing it
 NVKE: $NVKE_REF; workload cluster: $NVKE_CLUSTER
 VM tools: Tilt $NVKE_TILT_VERSION, kubectl $NVKE_KUBECTL_VERSION, vCluster CLI $NVKE_VCLUSTER_VERSION
-Workload cluster add-ons: local-path-provisioner $NVKE_LOCAL_PATH_VERSION as the default storage class
+Workload cluster add-ons: local-path-provisioner $NVKE_LOCAL_PATH_VERSION as the default storage class, metrics-server $NVKE_METRICS_SERVER_VERSION
 Host installation: /opt/nvke-lab, dedicated nvkelab user
 Endpoint access: SSH to localhost ports $NVKE_LOCAL_TILT_PORT, $NVKE_LOCAL_API_PORT, $NVKE_LOCAL_K8S_PORT
 No public application ingress rules are created.
@@ -84,7 +86,8 @@ case "$CMD" in
     # Only copy non-secret configuration and the remote scripts.
     {
       for key in NVKE_REF NVKE_CLUSTER NVKE_TILT_VERSION NVKE_KUBECTL_VERSION NVKE_VCLUSTER_VERSION \
-                 NVKE_LOCAL_PATH_VERSION NVKE_LOCAL_PATH_SHA256 NVKE_READY_TIMEOUT; do
+                 NVKE_LOCAL_PATH_VERSION NVKE_LOCAL_PATH_SHA256 NVKE_METRICS_SERVER_VERSION \
+                 NVKE_METRICS_SERVER_SHA256 NVKE_READY_TIMEOUT; do
         printf '%s=%q\n' "$key" "${!key}"
       done
     } > "$STATE_DIR/lab.env"

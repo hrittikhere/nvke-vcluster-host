@@ -193,6 +193,24 @@ elif a[:2] == ['compute', 'ssh'] and os.environ.get('MOCK_WAIT_ERROR') == '1':
         self.assertIn('NVKE_LOCAL_PATH_VERSION=v0.0.30', env)
         self.assertRegex(env, r'NVKE_LOCAL_PATH_SHA256=[a-f0-9]{64}\n')
 
+    def test_metrics_server_pin_validated_and_forwarded(self):
+        p = self.kit / 'config.env'
+        original = p.read_text()
+        for bad in [original.replace('NVKE_METRICS_SERVER_VERSION=v0.9.0', 'NVKE_METRICS_SERVER_VERSION=latest'),
+                    original.replace('NVKE_METRICS_SERVER_SHA256=', 'NVKE_METRICS_SERVER_SHA256=deadbeef')]:
+            p.write_text(bad)
+            r = self.run_kit('up')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertEqual(self.calls(), [])
+        p.write_text(original)
+        r = self.run_kit('plan')
+        self.assertIn('metrics-server v0.9.0', r.stdout)
+        r = self.run_kit('up')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        env = (self.kit / '.state' / 'lab.env').read_text()
+        self.assertIn('NVKE_METRICS_SERVER_VERSION=v0.9.0\n', env)
+        self.assertRegex(env, r'NVKE_METRICS_SERVER_SHA256=[a-f0-9]{64}\n')
+
     def test_remote_vcluster_targets_workload_and_quotes(self):
         dangerous = 'x; touch /tmp/nvke-should-not-exist'
         r = self.run_kit('vcluster', 'list', '--namespace', dangerous)
@@ -265,6 +283,18 @@ class RemoteScriptTests(unittest.TestCase):
         self.assertLess(bootstrap.index('condition=Ready nodes'), bootstrap.index('local-path-storage.yaml'))
         self.assertLess(bootstrap.index('local-path-storage.yaml'), bootstrap.index('versions.txt'))
 
+    def test_bootstrap_installs_metrics_server(self):
+        """kubectl top needs the Metrics API; install it after the storage class, verified."""
+        bootstrap = (ROOT / 'remote/bootstrap.sh').read_text()
+        url = 'metrics-server/releases/download/$NVKE_METRICS_SERVER_VERSION/components.yaml'
+        self.assertIn(url, bootstrap)
+        self.assertIn('"$NVKE_METRICS_SERVER_SHA256"', bootstrap)
+        self.assertNotIn('kubelet-insecure-tls', bootstrap.replace('without --kubelet-insecure-tls', ''))
+        self.assertIn('rollout status deployment/metrics-server', bootstrap)
+        self.assertIn('condition=Available apiservice/v1beta1.metrics.k8s.io', bootstrap)
+        self.assertLess(bootstrap.index('rollout status deployment/local-path-provisioner'), bootstrap.index(url))
+        self.assertLess(bootstrap.index('apiservice/v1beta1.metrics.k8s.io'), bootstrap.index('versions.txt'))
+
     def test_setup_installs_cli_but_creates_no_vcluster(self):
         """Setup installs only the pinned vCluster CLI; clusters are created later from the Platform."""
         install = (ROOT / 'remote/install.sh').read_text()
@@ -285,6 +315,17 @@ class RemoteScriptTests(unittest.TestCase):
         self.assertIn('lab-profile.sh', install)
         self.assertIn('vcluster-linux-amd64', install)
         self.assertIn('checksums.txt', install)
+
+    def test_install_gives_root_the_workload_kubeconfig(self):
+        """sudo kubectl on the VM must reach the workload cluster, not the NVKE API on :8080."""
+        install = (ROOT / 'remote/install.sh').read_text()
+        copy = 'install -m 0600 -o root -g root "$BASE/state/workload.kubeconfig" /root/.kube/config'
+        self.assertIn(copy, install)
+        self.assertIn('install -d -m 0700 -o root -g root /root/.kube', install)
+        self.assertIn('/root/.kube/config.bak-', install)
+        # Only after bootstrap has produced the kubeconfig, and never a move.
+        self.assertLess(install.index('kit/remote/bootstrap.sh"'), install.index(copy))
+        self.assertNotIn('mv "$BASE/state/workload.kubeconfig"', install)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

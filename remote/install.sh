@@ -165,3 +165,12 @@ chmod 0755 /usr/local/bin/nvkectl
 runuser -u nvkelab -- env HOME="$BASE/home" \
   PATH="/usr/local/bin:/usr/bin:/bin:$BASE/src/cli/bin" GOTOOLCHAIN="$GOTOOLCHAIN" \
   bash "$BASE/kit/remote/bootstrap.sh"
+# Give root the workload cluster as its default kubeconfig, so `sudo kubectl`
+# works on the VM. Copy rather than move: the kit reads the original. Keep a
+# backup of any different config already there instead of overwriting it.
+install -d -m 0700 -o root -g root /root/.kube
+if [[ -f /root/.kube/config ]] && ! cmp -s "$BASE/state/workload.kubeconfig" /root/.kube/config; then
+  cp -p /root/.kube/config "/root/.kube/config.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+install -m 0600 -o root -g root "$BASE/state/workload.kubeconfig" /root/.kube/config
+echo 'Workload kubeconfig installed at /root/.kube/config.'
