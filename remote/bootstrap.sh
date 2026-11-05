@@ -161,6 +161,22 @@ done
 run wk annotate storageclass local-path storageclass.kubernetes.io/is-default-class=true --overwrite
 run wk -n local-path-storage rollout status deployment/local-path-provisioner --timeout=300s
 run wk get storageclass
+phase 'Installing metrics-server on the workload cluster'
+# Serves the Metrics API for kubectl top and autoscalers. The kubelets use
+# serverTLSBootstrap with CA-signed serving certs, so the upstream manifest works
+# unchanged, without --kubelet-insecure-tls.
+manifest="$BASE/state/metrics-server-$NVKE_METRICS_SERVER_VERSION.yaml"
+if [[ ! -f "$manifest" ]]; then
+  curl --fail --retry 4 --connect-timeout 30 -sSL \
+    "https://github.com/kubernetes-sigs/metrics-server/releases/download/$NVKE_METRICS_SERVER_VERSION/components.yaml" \
+    -o "$manifest.tmp"
+  printf '%s  %s\n' "$NVKE_METRICS_SERVER_SHA256" "$manifest.tmp" | sha256sum -c - \
+    || { rm -f "$manifest.tmp"; echo 'metrics-server manifest checksum mismatch.' >&2; exit 1; }
+  mv "$manifest.tmp" "$manifest"
+fi
+run wk apply -f "$manifest"
+run wk -n kube-system rollout status deployment/metrics-server --timeout=300s
+run wk wait --for=condition=Available apiservice/v1beta1.metrics.k8s.io --timeout=300s
 {
   git rev-parse HEAD
   go version
@@ -171,6 +187,7 @@ run wk get storageclass
   tilt version
   vcluster --version
   echo "local-path-provisioner $NVKE_LOCAL_PATH_VERSION"
+  echo "metrics-server $NVKE_METRICS_SERVER_VERSION"
 } > "$BASE/state/versions.txt"
 phase 'Ready: workload cluster has two Ready nodes'
 date -u +%FT%TZ > "$BASE/state/ready"

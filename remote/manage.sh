@@ -32,6 +32,8 @@ case ${1:-status} in
     if [[ -f "$BASE/state/workload.kubeconfig" ]]; then
       lab kubectl --request-timeout=20s --kubeconfig="$BASE/state/workload.kubeconfig" get nodes -o wide \
         || echo 'Workload API is not reachable right now; see Tilt logs.' >&2
+      lab kubectl --request-timeout=20s --kubeconfig="$BASE/state/workload.kubeconfig" top nodes 2>/dev/null \
+        || echo 'Metrics API is not available yet.' >&2
     fi
     ;;
   *) echo 'Expected status or wait.' >&2; exit 2 ;;
