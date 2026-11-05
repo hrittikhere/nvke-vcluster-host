@@ -316,5 +316,16 @@ class RemoteScriptTests(unittest.TestCase):
         self.assertIn('vcluster-linux-amd64', install)
         self.assertIn('checksums.txt', install)
 
+    def test_install_gives_root_the_workload_kubeconfig(self):
+        """sudo kubectl on the VM must reach the workload cluster, not the NVKE API on :8080."""
+        install = (ROOT / 'remote/install.sh').read_text()
+        copy = 'install -m 0600 -o root -g root "$BASE/state/workload.kubeconfig" /root/.kube/config'
+        self.assertIn(copy, install)
+        self.assertIn('install -d -m 0700 -o root -g root /root/.kube', install)
+        self.assertIn('/root/.kube/config.bak-', install)
+        # Only after bootstrap has produced the kubeconfig, and never a move.
+        self.assertLess(install.index('kit/remote/bootstrap.sh"'), install.index(copy))
+        self.assertNotIn('mv "$BASE/state/workload.kubeconfig"', install)
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -100,6 +100,7 @@ A site's local files live under `.state/sites/<site>/`. Each site costs the same
 10. Install `local-path-provisioner` (pinned by `NVKE_LOCAL_PATH_VERSION`, manifest verified against `NVKE_LOCAL_PATH_SHA256`) on the workload cluster and mark `local-path` as the default storage class. The mock lab ships no provisioner, and without one every PersistentVolumeClaim, including a vCluster control plane's data volume, stays Pending.
 11. Install metrics-server (pinned by `NVKE_METRICS_SERVER_VERSION`, manifest verified against `NVKE_METRICS_SERVER_SHA256`) and wait until the Metrics API is available, so `kubectl top` works. The upstream manifest is applied unchanged: the kubelets have CA-signed serving certificates, so metrics-server verifies their TLS without `--kubelet-insecure-tls`.
 12. Record tool versions. Setup installs the vCluster CLI but creates no vCluster; create clusters later from vCluster Platform once the workload cluster is connected.
+13. Copy the workload kubeconfig to `/root/.kube/config` with mode 0600, so `sudo kubectl` on the VM reaches the workload cluster. The original stays in `/opt/nvke-lab/state/`. A different existing root kubeconfig is kept as a timestamped backup.
 
 ## Files
 
@@ -113,6 +114,22 @@ A site's local files live under `.state/sites/<site>/`. Each site costs the same
 | `remote/bootstrap.sh` | VM, lab user | Build and bring up NVKE, create and verify the workload cluster, then add the default storage class and metrics-server |
 | `remote/manage.sh` | VM | Status and wait operations |
 | `tests/test_kit.py` | Laptop | Offline regression checks |
+
+## Use kubectl on the VM
+
+After setup, root's default kubeconfig is the workload cluster, so `sudo kubectl` works in any SSH session on the VM:
+
+```bash
+sudo kubectl get nodes
+sudo kubectl top nodes
+```
+
+To use `kubectl` without `sudo` from your own account, copy the same file into your home. It holds cluster-admin credentials, so keep it at 0600:
+
+```bash
+mkdir -p ~/.kube && chmod 700 ~/.kube
+sudo install -m 0600 -o "$USER" -g "$USER" /opt/nvke-lab/state/workload.kubeconfig ~/.kube/config
+```
 
 ## Use the vCluster CLI
 
@@ -184,6 +201,7 @@ kubectl --context=kind-controller-capi get pods -A
 - **After a VM reboot:** run `up` again to reconcile the development setup. The kit keeps services alive across SSH disconnections but does not promise unattended recovery across host reboots or kernel changes.
 - **No GPU workloads:** mock-NICo simulates infrastructure with containers. Use a separate GPU-backed setup to validate GPU scheduling or inference performance.
 - **Pod or PersistentVolumeClaim Pending with `no storage class is set`:** the default storage class is missing. `./nvke-gcp.sh kubectl get storageclass` should list `local-path (default)`. Rerun `./nvke-gcp.sh up` to reinstall it, then delete the Pending pod and claim so the StatefulSet recreates them. Persistent volumes live on the node's disk and are not replicated.
+- **`kubectl` on the VM says `You must be logged in to the server`:** your account has no kubeconfig, so `kubectl` falls back to `http://localhost:8080`, which on this VM is the NVKE management API and rejects the request. Use `sudo kubectl`, or copy the kubeconfig into your home as shown in "Use kubectl on the VM".
 - **`kubectl top` fails with `Metrics API not available`:** run `./nvke-gcp.sh kubectl get apiservice v1beta1.metrics.k8s.io` and `./nvke-gcp.sh kubectl -n kube-system logs deploy/metrics-server`. A TLS error on port 10250 means a kubelet serving certificate is missing or unapproved; check `./nvke-gcp.sh kubectl get csr`. Rerun `./nvke-gcp.sh up` to reapply the manifest.
 
 ## Remove the lab
@@ -212,6 +230,8 @@ Revised on November 5, 2026 to install vCluster as part of setup. Bootstrap now 
 Revised on November 5, 2026 to stop creating a vCluster during setup. Setup still installs and records the pinned vCluster CLI, and the `vcluster` passthrough command remains. `NVKE_VCLUSTER_NAME` and `NVKE_VCLUSTER_NAMESPACE` are gone; clusters are created from vCluster Platform after the workload cluster is connected. The same change added `sites/` configs and `NVKE_STATE_DIR` for running several sites side by side.
 
 Revised on November 5, 2026 to install metrics-server during setup, after the default storage class. The upstream v0.9.0 manifest is pinned by `NVKE_METRICS_SERVER_VERSION` and verified against `NVKE_METRICS_SERVER_SHA256`, and setup waits until the Metrics API is available. `status` now runs `kubectl top nodes`. The same manifest and checksum were applied by hand to the live EU and Asia clusters, where the APIService became Available and `kubectl top` returned node and pod usage. The bootstrap path was syntax-checked and is covered by the 26 offline tests, which pass, but it has not run end to end.
+
+Revised on November 5, 2026 after a login on the EU VM ran `kubectl top nodes` without a kubeconfig and hit the NVKE management API on port 8080, which answered `401 Unauthorized`. Setup now copies the workload kubeconfig to `/root/.kube/config` so `sudo kubectl` works, and the README shows how to copy it into your own account. Shell syntax checks and 27 offline tests pass. The step has not run on a VM yet.
 
 **A real GCP end-to-end deployment was not executed while authoring this kit.** Kernel support, cloud capacity/permissions, external artifact downloads, complete upstream startup, and vCluster Platform import still need validation on your VM. The kit is a reproducible starting point with checks and logs, not a claim of a tested production integration.
 
